@@ -1,0 +1,101 @@
+"""
+Logistics Delivery-Time Prediction and Optimization
+Week 4 Task - Predictive Modeling and Optimization in Logistics Systems
+This script trains and compares Linear Regression, Decision Tree, and
+Random Forest models to forecast shipment delivery time, then validates
+the best model with cross-validation and hyperparameter tuning.
+Expects a CSV named 'shipments.csv' with columns:
+distance_km, traffic_index, weather_severity, shipment_weight_kg,
+vehicle_type, driver_experience_yrs, dispatch_hour,
+warehouse_processing_time_min, num_stops, delivery_time_hrs
+"""
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LinearRegression
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+# ---------------------------------------------------------------------------
+# 1. Data preparation
+# ---------------------------------------------------------------------------
+df = pd.read_csv("shipments.csv")
+numeric_features = [
+    "distance_km", "traffic_index", "shipment_weight_kg",
+    "driver_experience_yrs", "dispatch_hour",
+    "warehouse_processing_time_min", "num_stops",
+]
+categorical_features = ["weather_severity", "vehicle_type"]
+X = df[numeric_features + categorical_features]
+y = df["delivery_time_hrs"]
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+preprocessor = ColumnTransformer(
+    transformers=[
+        ("num", StandardScaler(), numeric_features),
+        ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features),
+    ]
+)
+# ---------------------------------------------------------------------------
+# 2. Model training
+# ---------------------------------------------------------------------------
+models = {
+    "Linear Regression": LinearRegression(),
+    "Decision Tree": DecisionTreeRegressor(max_depth=8, random_state=42),
+    "Random Forest": RandomForestRegressor(
+        n_estimators=300, max_depth=12, random_state=42, n_jobs=-1
+    ),
+}
+fitted_pipelines = {}
+for name, model in models.items():
+    pipe = Pipeline(steps=[("preprocess", preprocessor), ("model", model)])
+    pipe.fit(X_train, y_train)
+    fitted_pipelines[name] = pipe
+# ---------------------------------------------------------------------------
+# 3. Evaluation
+# ---------------------------------------------------------------------------
+print("\nModel performance on held-out test set:")
+for name, pipe in fitted_pipelines.items():
+    preds = pipe.predict(X_test)
+    rmse = mean_squared_error(y_test, preds, squared=False)
+    mae = mean_absolute_error(y_test, preds)
+    r2 = r2_score(y_test, preds)
+    print(f"  {name}: RMSE={rmse:.2f}h  MAE={mae:.2f}h  R2={r2:.3f}")
+# ---------------------------------------------------------------------------
+# 4. Cross-validation and hyperparameter tuning (Random Forest)
+# ---------------------------------------------------------------------------
+rf_pipe = Pipeline(
+    steps=[
+        ("preprocess", preprocessor),
+        ("model", RandomForestRegressor(random_state=42)),
+    ]
+)
+
+param_grid = {
+    "model__n_estimators": [200, 300, 500],
+    "model__max_depth": [8, 12, 16, None],
+}
+grid_search = GridSearchCV(
+    rf_pipe, param_grid, cv=5, scoring="neg_root_mean_squared_error", n_jobs=-1
+)
+grid_search.fit(X_train, y_train)
+print("\nBest Random Forest params:", grid_search.best_params_)
+print("Best CV RMSE:", -grid_search.best_score_)
+# ---------------------------------------------------------------------------
+# 5. Optimization helper: flag high-risk shipments against an SLA
+# ---------------------------------------------------------------------------
+def flag_high_risk_shipments(pipe, X_new, sla_hours=24):
+    """Return rows predicted to exceed the delivery SLA, for proactive
+    re-routing, re-assignment, or customer notification."""
+    preds = pipe.predict(X_new)
+    result = X_new.copy()
+    result["predicted_delivery_hrs"] = preds
+    return result[result["predicted_delivery_hrs"] > sla_hours]
+if __name__ == "__main__":
+    best_model = fitted_pipelines["Random Forest"]
+    at_risk = flag_high_risk_shipments(best_model, X_test, sla_hours=24)
+    print(f"\n{len(at_risk)} of {len(X_test)} test shipments flagged as high-risk (> 24h).")
